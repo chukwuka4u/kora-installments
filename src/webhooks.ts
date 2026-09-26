@@ -1,12 +1,17 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**
- * Verifies the X-Kora-Signature header against the raw request body.
- * Confirm the exact hashing scheme (HMAC-SHA256 over the raw JSON body is the
- * common convention) against Kora's webhook docs before trusting this in production.
+ * Verifies Kora's webhook signature (developers.korapay.com/docs/webhooks).
+ *
+ * Two details that are easy to get wrong:
+ * - The header is `x-korapay-signature` (lowercase, no "Kora"-branded casing).
+ * - The HMAC is computed over ONLY the `data` object of the payload, not the
+ *   raw request body and not the full `{ event, data }` envelope. Pass
+ *   `payload.data` (or `payload.data` re-stringified) here, not `req.body`.
  */
-export function verifyKoraSignature(rawBody: string, signature: string, secretKey: string): boolean {
-  const expected = createHmac("sha256", secretKey).update(rawBody).digest("hex");
+export function verifyKoraSignature(data: unknown, signature: string, secretKey: string): boolean {
+  const serialized = typeof data === "string" ? data : JSON.stringify(data);
+  const expected = createHmac("sha256", secretKey).update(serialized).digest("hex");
 
   const expectedBuf = Buffer.from(expected, "utf8");
   const signatureBuf = Buffer.from(signature, "utf8");

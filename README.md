@@ -1,18 +1,29 @@
 # kora-installments
 
-Installment scheduling built on top of [Kora](https://korapay.com)'s
-Direct Debit and charge APIs. Kora doesn't track "installment 2 of 4" natively — this
-package owns that state on your side while delegating actual money movement to Kora.
+Installment / Buy-Now-Pay-Later scheduling built on top of [Kora](https://korapay.com)'s
+Direct Debit authorization API. Kora has no native concept of "installment 2 of 4" — it
+only knows how to debit a bank account once, or on a fixed recurring cadence. This
+package owns the installment schedule and state on your side while Kora handles the
+actual bank debit.
 
-> **Status:** currently an early scaffold. `KoraClient` endpoint paths and payload shapes are
-> placeholders and must be verified against the current
-> [Kora API docs](https://developers.korapay.com) before production use.
+> **Status:** early scaffold, typed directly against Kora's published docs
+> (developers.korapay.com/docs/overview-1). Not yet tested against a live NIBSS
+> authorization — verify in Kora's sandbox before production use.
 
 ## Install
 
 ```bash
 npm install kora-installments
 ```
+
+## How activation actually works (important — no redirect URL)
+
+Unlike hosted-checkout flows, Kora's direct debit authorization is activated by the
+**customer transferring a N50 verification token** to their own bank account via their
+banking app or USSD — there is no page to redirect them to. `createPlan` returns
+`activationInstructions` (a description plus the account/bank to send the token to) for
+you to display. Once the bank confirms, Kora fires a `direct_debit.auth` webhook and the
+authorization becomes debit-ready.
 
 ## Usage
 
@@ -27,16 +38,24 @@ const manager = new InstallmentPlanManager({
   storage: new InMemoryStorageAdapter(), // swap for your own StorageAdapter in production
 });
 
-const { plan, installments, authorizationUrl } = await manager.createPlan({
-  customerId: "cust_123",
-  customerEmail: "buyer@example.com",
-  totalAmount: 120000,
-  currency: "NGN",
-  numberOfInstallments: 3,
-});
+const { plan, installments, activationInstructions } = await manager.createPlan(
+  {
+    customerId: "cust_123",
+    customer: {
+      name: "Jane Doe",
+      email: "jane@example.com",
+      account_number: "0112345678",
+      bank_code: "058",
+      phone_number: "08012345678",
+    },
+    totalAmount: 120000,
+    currency: "NGN",
+    numberOfInstallments: 3,
+  },
+);
 
-// Redirect the customer to authorizationUrl to approve the mandate.
-// Once your webhook confirms authorization:
+// Show activationInstructions.description to the customer (the N50 token payment
+// details). Once your webhook confirms `direct_debit.auth` status "success":
 await manager.activatePlan(plan.id);
 
 // Run this on a cron / queue worker:
@@ -58,15 +77,27 @@ class PostgresStorageAdapter implements StorageAdapter {
 
 ## Webhooks
 
+Kora signs webhooks with `x-korapay-signature`, an HMAC-SHA256 of **only the `data`
+object** of the payload (not the full body):
+
 ```ts
 import { verifyKoraSignature } from "kora-installments";
 
 const isValid = verifyKoraSignature(
-  rawBody,
-  req.headers["x-kora-signature"],
+  req.body.data, // not req.body itself
+  req.headers["x-korapay-signature"],
   process.env.KORA_WEBHOOK_SECRET!,
 );
 ```
+
+Two webhook events matter for this flow:
+
+- `direct_debit.auth` (`status: "success" | "failed"`) — the authorization was
+  approved or rejected. Call `manager.activatePlan(planId)` on success.
+- `charge.success` / `charge.failed` — an individual debit finished. Call
+  `manager.reconcileInstallment(reference)` to finalize local state (debits are
+  processed asynchronously by NIBSS, so an immediate verify right after charging can
+  still return `"pending"`/`"processing"`).
 
 ## Development
 
@@ -76,7 +107,3 @@ npm run build       # tsup -> dist/ (cjs + esm + .d.ts)
 npm test            # vitest
 npm run typecheck
 ```
-
-## License
-
-MIT

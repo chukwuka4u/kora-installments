@@ -1,4 +1,4 @@
-import type { KoraClientConfig } from "./types.js";
+import type { AuthorizationData, ChargeQueryData, CreateAuthorizationParams, DebitAuthorizationParams, DebitData, KoraClientConfig, KoraResponse, RetrieveAuthorizationData } from "./types.js";
 
 export class KoraClient {
   private apiKey: string;
@@ -6,7 +6,7 @@ export class KoraClient {
 
   constructor(config: KoraClientConfig) {
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl ?? "https://api.korapay.com";
+    this.baseUrl = config.baseUrl ?? "https://api.korapay.com/merchant/api/v1";
   }
 
   private async request<T>(path: string, method: string, body?: unknown): Promise<T> {
@@ -28,28 +28,33 @@ export class KoraClient {
   }
 
   /** Initiates a direct debit mandate authorization for a customer. */
-  async createMandate(params: { customerEmail: string; customerReference: string }) {
-    return this.request<{ data: { mandate_reference: string; authorization_url: string } }>(
-      "/v1/direct-debit/mandates",
+  async createAuthorization(params: CreateAuthorizationParams) {
+    return this.request<KoraResponse<AuthorizationData>>(
+      "/merchant/api/v1/direct-debit/initiate",
       "POST",
       params
     );
   }
 
-  /** Charges an already-authorized mandate for a specific installment amount. */
-  async chargeMandate(params: { mandateReference: string; amount: number; reference: string }) {
-    return this.request<{ data: { status: string; reference: string } }>(
-      "/v1/direct-debit/charge",
-      "POST",
-      params
-    );
-  }
-
-  /** Verifies the final status of a charge — always call this rather than trusting webhooks alone. */
-  async verifyCharge(reference: string) {
-    return this.request<{ data: { status: string; amount: number; reference: string } }>(
-      `/v1/charges/verify/${reference}`,
+  /** Confirms the current status of an authorization (pending/active/suspended/deactivated/expired). */
+  async retrieveAuthorization(reference: string) {
+    return this.request<KoraResponse<RetrieveAuthorizationData>>(
+      `/merchant/api/v1/direct-debit/authorizations/${reference}`,
       "GET"
     );
+  }
+
+  /** Triggers a single debit against an already-active variable authorization. */
+  async debitAuthorization(authorizationCode: string, params: DebitAuthorizationParams) {
+    return this.request<KoraResponse<DebitData>>(
+      `/merchant/api/v1/direct-debit/authorizations/${authorizationCode}/debits`,
+      "POST",
+      params
+    );
+  }
+
+  /** Verifies the final status of any charge, including direct debit debits, by your own reference. */
+  async verifyCharge(reference: string) {
+    return this.request<KoraResponse<ChargeQueryData>>(`/merchant/api/v1/charges/${reference}`, "GET");
   }
 }

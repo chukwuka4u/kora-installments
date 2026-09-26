@@ -9,6 +9,17 @@ export interface InstallmentPlanManagerConfig {
   storage: StorageAdapter;
 }
 
+export interface ActivationInstructions {
+  /** Human-readable instructions from Kora to relay to the customer. */
+  description: string;
+  accountNumber: string;
+  bankCode: string;
+}
+
+function toKoraDate(date: Date): string {
+  return date.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
 export class InstallmentPlanManager {
   private client: KoraClient;
   private storage: StorageAdapter;
@@ -19,18 +30,36 @@ export class InstallmentPlanManager {
   }
 
   /**
-   * Creates a plan, starts the mandate authorization flow, and persists the
-   * installment schedule. The plan stays in "awaiting_mandate" until the
-   * customer completes authorization at the returned authorizationUrl.
+   * Creates a plan, requests a Kora direct debit authorization, and persists
+   * the installment schedule. There is no redirect/authorization URL in
+   * Kora's flow — the customer activates the authorization themselves by
+   * transferring a N50 NIBSS verification token to the account described in
+   * `activationInstructions`. The plan stays "awaiting_authorization" until
+   * your webhook handler confirms activation (see `activatePlan`).
    */
   async createPlan(
-    input: CreatePlanInput & { customerEmail: string }
-  ): Promise<{ plan: InstallmentPlanRecord; installments: Installment[]; authorizationUrl: string }> {
+    input: CreatePlanInput
+  ): Promise<{ plan: InstallmentPlanRecord; installments: Installment[]; activationInstructions: ActivationInstructions }> {
     const planId = randomUUID();
+    const installments = buildSchedule(planId, input);
 
-    const mandate = await this.client.createMandate({
-      customerEmail: input.customerEmail,
-      customerReference: input.customerId,
+    const lastDueDate = new Date(installments[installments.length - 1].dueDate);
+    const bufferDays = input.authorizationEndBufferDays ?? 7;
+    const endDate = new Date(lastDueDate);
+    endDate.setDate(endDate.getDate() + bufferDays);
+
+    // "variable" authorizations cap the amount allowed per single debit, not
+    // the plan total, so the ceiling must be at least the largest installment.
+    const maxInstallmentAmount = Math.max(...installments.map((i) => i.amount));
+
+    const authorization = await this.client.createAuthorization({
+      debit_type: "variable",
+      amount: maxInstallmentAmount,
+      currency: input.currency,
+      description: input.description ?? `Installment plan for ${input.customerId}`,
+      start_date: toKoraDate(new Date()),
+      end_date: toKoraDate(endDate),
+      customer: input.customer,
     });
 
     const plan: InstallmentPlanRecord = {
@@ -38,20 +67,27 @@ export class InstallmentPlanManager {
       customerId: input.customerId,
       totalAmount: input.totalAmount,
       currency: input.currency,
-      mandateReference: mandate.data.mandate_reference,
-      status: "awaiting_mandate",
+      authorizationReference: authorization.data.reference,
+      authorizationCode: authorization.data.authorization_code,
+      status: "awaiting_authorization",
       createdAt: new Date().toISOString(),
     };
-
-    const installments = buildSchedule(planId, input);
 
     await this.storage.savePlan(plan);
     await this.storage.saveInstallments(installments);
 
-    return { plan, installments, authorizationUrl: mandate.data.authorization_url };
+    return {
+      plan,
+      installments,
+      activationInstructions: {
+        description: authorization.data.description,
+        accountNumber: authorization.data.customer_account_number,
+        bankCode: authorization.data.customer_bank_code,
+      },
+    };
   }
 
-  /** Call this once your webhook confirms the mandate was successfully authorized. */
+  /** Call this from your webhook handler once `direct_debit.auth` fires with status "success". */
   async activatePlan(planId: string): Promise<void> {
     await this.storage.updatePlan(planId, { status: "active" });
   }
@@ -59,6 +95,11 @@ export class InstallmentPlanManager {
   /**
    * Charges a single due installment. Idempotent: if the installment is
    * already marked "paid", this is a no-op.
+   *
+   * Debits are processed asynchronously by NIBSS, so an immediate verify
+   * call may still return "pending"/"processing" rather than a final
+   * status — in that case the installment is left as "due" for your
+   * `charge.success` / `charge.failed` webhook handler to finalize.
    */
   async chargeInstallment(reference: string): Promise<void> {
     const installment = await this.storage.getInstallmentByReference(reference);
@@ -66,28 +107,40 @@ export class InstallmentPlanManager {
     if (installment.status === "paid") return; // idempotency guard
 
     const plan = await this.storage.getPlan(installment.planId);
-    if (!plan?.mandateReference) throw new Error(`Plan ${installment.planId} has no active mandate`);
+    if (!plan?.authorizationCode) throw new Error(`Plan ${installment.planId} has no active authorization`);
 
     await this.storage.updateInstallment(reference, { status: "due" });
 
-    const result = await this.client.chargeMandate({
-      mandateReference: plan.mandateReference,
-      amount: installment.amount,
+    await this.client.debitAuthorization(plan.authorizationCode, {
       reference,
+      amount: installment.amount,
+      currency: plan.currency as "NGN",
+      narration: `Installment ${installment.sequence} for plan ${plan.id}`,
     });
 
-    // Never trust the immediate response alone — verify before marking paid.
-    const verification = await this.client.verifyCharge(result.data.reference);
+    await this.reconcileInstallment(reference);
+  }
+
+  /**
+   * Re-checks a debit's final status against Kora and updates local state
+   * accordingly. Call this from your `charge.success` / `charge.failed`
+   * webhook handler (recommended), or periodically for any installment
+   * still stuck in "due".
+   */
+  async reconcileInstallment(reference: string): Promise<void> {
+    const verification = await this.client.verifyCharge(reference);
 
     if (verification.data.status === "success") {
       await this.storage.updateInstallment(reference, {
         status: "paid",
         chargedAt: new Date().toISOString(),
       });
-      await this.maybeCompletePlan(installment.planId);
-    } else {
+      const installment = await this.storage.getInstallmentByReference(reference);
+      if (installment) await this.maybeCompletePlan(installment.planId);
+    } else if (verification.data.status === "failed") {
       await this.storage.updateInstallment(reference, { status: "failed" });
     }
+    // "pending" / "processing": leave as "due", not yet final.
   }
 
   /**
