@@ -34,7 +34,15 @@
     "payments"
   ],
   "license": "MIT",
-  "author": "",
+  "author": "chukwuka4u <chukwukadiemma@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chukwuka4u/kora-installments.git"
+  },
+  "homepage": "https://github.com/chukwuka4u/kora-installments#readme",
+  "bugs": {
+    "url": "https://github.com/chukwuka4u/kora-installments/issues"
+  },
   "devDependencies": {
     "@types/node": "^26.6.2",
     "tsup": "^8.5.1",
