@@ -1,6 +1,6 @@
 {
   "name": "kora-installments",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Installment scheduling layer built on top of Kora's payment API. Built during the Kora X GDG pre-devfest hackathon 2026",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
