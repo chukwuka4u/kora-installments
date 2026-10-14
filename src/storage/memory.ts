@@ -45,9 +45,9 @@ export class InMemoryStorageAdapter implements StorageAdapter {
     this.installments.set(reference, { ...existing, ...patch });
   }
 
-  async getDueInstallments(asOf: Date): Promise<Installment[]> {
-    return [...this.installments.values()].filter(
-      (i) => i.status !== "paid" && new Date(i.dueDate) <= asOf
-    );
-  }
+  async getDueInstallments(asOf: Date) {
+  return [...this.installments.values()].filter(
+    (i) => (i.status === "pending" || i.status === "due") && new Date(i.dueDate) <= asOf
+  );
+}
 }

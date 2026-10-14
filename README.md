@@ -36,6 +36,17 @@ import {
 const manager = new InstallmentPlanManager({
   kora: { apiKey: process.env.KORA_SECRET_KEY! },
   storage: new InMemoryStorageAdapter(), // swap for your own StorageAdapter in production
+  // optional retry property of type ReturnPolicy, falls back to default values if omitted
+  retry: undefined, // Tells the internal code to fall back to default values safely
+  /*
+  Default values
+  retry: {
+    maxAttempts: 3, max number of retries at a time for a failed installment
+    retryDelayHours: 24, max time before next retry for a failed installment 
+    extensionDays: 7, if retry fails, number of days to extend failed installment for new retry
+    maxExtensions: 2, max number of extensions to try on a failed transaction
+  }
+  */
 });
 
 const { plan, installments, activationInstructions } = await manager.createPlan(

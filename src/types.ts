@@ -12,7 +12,19 @@ export interface Installment {
   amount: number;
   dueDate: string; // ISO date
   status: InstallmentStatus;
+  attempts?: number;
+  extensions?: number;
+  originalDueDate?: string; // ISO date, if the installment was extended
+  /** The unique reference sent to Kora for the most recent attempt. */
+  lastAttemptReference?: string;
   chargedAt?: string;
+}
+
+export interface RetryPolicy {
+  maxAttempts?: number;      // default 3
+  retryDelayHours?: number;  // default 24
+  extensionDays?: number;    // default 7
+  maxExtensions?: number;    // default 2
 }
 
 export interface InstallmentPlanRecord {
