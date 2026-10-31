@@ -14,16 +14,15 @@ export function buildSchedule(planId: string, input: CreatePlanInput): Installme
     throw new Error("totalAmount must be greater than 0");
   }
 
-  const baseAmount = Math.floor((totalAmount / numberOfInstallments) * 100) / 100;
+  const baseAmount = Math.floor(totalAmount / numberOfInstallments);
+  const diff = totalAmount % numberOfInstallments;
   const installments: Installment[] = [];
 
-  let allocated = 0;
   const now = new Date();
 
   for (let i = 0; i < numberOfInstallments; i++) {
-    const isLast = i === numberOfInstallments - 1;
-    const amount = isLast ? Math.round((totalAmount - allocated) * 100) / 100 : baseAmount;
-    allocated += amount;
+    const isFirst = i === 0;
+    const amount = isFirst ? Math.round(baseAmount + diff) : baseAmount;
 
     const dueDate = new Date(now);
     if (i === 0 && chargeFirstImmediately) {
